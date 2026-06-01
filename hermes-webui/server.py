@@ -4,14 +4,31 @@ Thin routing shell: imports Handler, delegates to api/routes.py, runs server.
 All business logic lives in api/*.
 """
 import logging
+import os
+import signal
 import socket
 import sys
 import time
+import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _log_signal(signum, frame):
+    """Log Windows/POSIX console-control events before clean shutdown."""
+    print('', flush=True)
+    print(f'[webui] Received signal={signum}', flush=True)
+    print(f'[webui] pid={os.getpid()} thread={threading.current_thread().name}', flush=True)
+    print(f"[webui] time={time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+
+    if frame is not None:
+        print('[webui] Signal frame stack:', flush=True)
+        traceback.print_stack(frame)
+
+    raise KeyboardInterrupt
 
 from api.auth import check_auth
 from api.config import HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
@@ -162,6 +179,11 @@ def main() -> None:
     except Exception as e:
         print(f'[!!] WARNING: Gateway watcher failed to start: {e}', flush=True)
 
+    # Debug Windows console-control events / Ctrl+C / Ctrl+Break.
+    signal.signal(signal.SIGINT, _log_signal)
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, _log_signal)
+
     httpd = QuietHTTPServer((HOST, PORT), Handler)
 
     # ── TLS/HTTPS setup (optional) ─────────────────────────────────────────
@@ -186,7 +208,14 @@ def main() -> None:
     print('', flush=True)
     try:
         httpd.serve_forever()
+    except KeyboardInterrupt:
+        print('\n[webui] KeyboardInterrupt received, shutting down cleanly...', flush=True)
     finally:
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+
         # Stop the gateway watcher on shutdown
         try:
             from api.gateway_watcher import stop_watcher
